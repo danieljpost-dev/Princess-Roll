@@ -637,6 +637,7 @@ impl App {
             Msg::Chat(text) => {
                 let who = self.role.other().as_str();
                 self.log(who, &text, "them");
+                self.sfx.blip();
             }
 
             Msg::Challenge { text, threshold } => {
