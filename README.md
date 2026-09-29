@@ -20,8 +20,9 @@ Stated plainly, because a vague privacy claim is worth nothing.
 **Protected**
 
 - No accounts, no names, no identifiers. Roles are the only labels.
-- Nothing is written to `localStorage`, `sessionStorage`, IndexedDB or cookies.
-  Closing the tab is the whole of the erase procedure.
+- The only thing stored is the sound level, under one `localStorage` key.
+  No messages, files, codes or identifiers are written anywhere; closing the
+  tab is the whole of the erase procedure.
 - Messages are sealed with AES-256-GCM under a key that exists only in memory,
   and again by WebRTC's own DTLS beneath that.
 - The pairing file that ships with the page is ciphertext. It says nothing about

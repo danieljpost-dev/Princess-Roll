@@ -29,8 +29,8 @@
     <p id="gate-error" class="error"></p>
 
     <p class="fine">
-      Nothing here is stored. No cookies, no local storage, no accounts.
-      Closing this tab erases everything it knew.
+      No accounts, no cookies, no message history. The one thing this page
+      remembers is your sound level; everything else goes when the tab closes.
     </p>
   </section>
 
@@ -91,7 +91,15 @@
       <span class="verify">
         safety phrase <strong id="verify-phrase">&hellip;</strong>
       </span>
-      <span id="link-state" class="link-state">connecting</span>
+      <span class="bar-right">
+        <select id="volume" class="volume" aria-label="Sound level">
+          <option value="0">Muted</option>
+          <option value="25">Sound 25%</option>
+          <option value="50">Sound 50%</option>
+          <option value="100">Sound 100%</option>
+        </select>
+        <span id="link-state" class="link-state">connecting</span>
+      </span>
     </header>
 
     <div class="stage">
@@ -150,6 +158,7 @@
         <button id="roll" class="primary big" disabled>Roll the Dice</button>
         <span id="roll-hint" class="muted"></span>
       </div>
+
 
       <div id="princess-controls" class="hidden controls">
         <p class="muted">Daddy sets the challenge. You roll against it.</p>

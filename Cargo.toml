@@ -100,6 +100,9 @@ features = [
   "File",
   "FileList",
   "Url",
+  # Sound level, the one remembered preference.
+  "Storage",
+  "HtmlSelectElement",
 ]
 
 # rpassword keeps the secret codes off the terminal scrollback during setup.
