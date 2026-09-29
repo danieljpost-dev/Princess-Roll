@@ -146,22 +146,25 @@
         <p id="challenge-error" class="error"></p>
       </div>
 
-      <div id="princess-controls" class="hidden controls">
-        <p class="muted">Daddy sets the challenge. You roll against it.</p>
-
-        <label class="field">
-          <span>Send an image or video</span>
-          <input id="file-input" type="file" accept="image/*,video/*">
-        </label>
-        <div class="row">
-          <button id="send-file">Send file</button>
-        </div>
-        <p id="transfer-error" class="error"></p>
-      </div>
-
       <div class="row roll-row">
         <button id="roll" class="primary big" disabled>Roll the Dice</button>
         <span id="roll-hint" class="muted"></span>
+      </div>
+
+      <div id="princess-controls" class="hidden controls">
+        <p class="muted">Daddy sets the challenge. You roll against it.</p>
+
+        <div id="file-share" class="hidden">
+          <hr>
+          <label class="field">
+            <span>Send an image or video</span>
+            <input id="file-input" type="file" accept="image/*,video/*">
+          </label>
+          <div class="row">
+            <button id="send-file">Send file</button>
+          </div>
+          <p id="transfer-error" class="error"></p>
+        </div>
       </div>
     </section>
 

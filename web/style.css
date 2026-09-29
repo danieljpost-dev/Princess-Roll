@@ -265,6 +265,63 @@ button.big { padding: 14px 28px; font-size: 1.05rem; }
 .line.success .who, .line.success .said { color: var(--gold); font-weight: 560; }
 .line.failure .who, .line.failure .said { color: var(--grey); font-weight: 560; }
 
+hr {
+  border: none;
+  border-top: 1px solid var(--edge);
+  margin: 18px 0 16px;
+}
+
+/* ------------------------------------------------------------------- alert */
+/* Princess's page while a challenge is waiting on her. Driven entirely by the
+   `alert` class on <body>, so the app only ever toggles one thing. */
+
+body,
+.panel, .bar, .stage, .challenge, .chat, .log,
+input, textarea, button {
+  transition: background-color 0.45s ease, border-color 0.45s ease,
+              color 0.45s ease;
+}
+
+body.alert {
+  --bg: #1b0c14;
+  --bg-raised: #2a1220;
+  --edge: #52233a;
+  --accent: #ff7aa8;
+  --accent-deep: #b3295c;
+  --muted: #c49aad;
+
+  background:
+    radial-gradient(1100px 620px at 50% -12%, #451329 0%, transparent 62%),
+    var(--bg);
+}
+
+body.alert .stage {
+  background: radial-gradient(520px 320px at 50% 42%, #3c1228 0%, #14070e 72%);
+}
+
+/* A glow that breathes around the viewport rather than around one element, so
+   it is visible wherever the page happens to be scrolled. */
+body.alert::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 60;
+  box-shadow: inset 0 0 130px 18px rgba(255, 95, 145, 0.38);
+  animation: alert-breathe 2.4s ease-in-out infinite;
+}
+
+@keyframes alert-breathe {
+  0%, 100% { opacity: 0.5; }
+  50%      { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.alert::after { animation: none; opacity: 0.75; }
+  body, .panel, .bar, .stage, .challenge, .chat, .log,
+  input, textarea, button { transition: none; }
+}
+
 /* -------------------------------------------------------------- attachments */
 
 .attachment {

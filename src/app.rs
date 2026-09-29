@@ -72,6 +72,20 @@ fn show(id: &str, visible: bool) {
     };
 }
 
+/// Drives the whole-page alert styling from one class on `<body>`, so the
+/// colour scheme lives in CSS rather than being poked element by element.
+fn set_body_alert(on: bool) {
+    let Some(body) = document().body() else {
+        return;
+    };
+    let classes = body.class_list();
+    let _ = if on {
+        classes.add_1("alert")
+    } else {
+        classes.remove_1("alert")
+    };
+}
+
 fn set_disabled(id: &str, disabled: bool) {
     let element = by_id(id);
     if disabled {
@@ -237,6 +251,8 @@ pub struct App {
     /// for part of the current one.
     next_file_id: u32,
     sending_file: bool,
+    /// Princess only: a challenge is waiting and she has not answered it.
+    alerting: bool,
 }
 
 type Shared = Rc<RefCell<App>>;
@@ -289,6 +305,25 @@ impl App {
 
     fn set_transfer(&self, text: &str) {
         set_text("transfer", text);
+    }
+
+    /// Princess only. Chimes every time, even if the page is already alerting:
+    /// a replaced challenge is new news.
+    fn raise_alert(&mut self) {
+        if self.is_daddy() {
+            return;
+        }
+        self.alerting = true;
+        set_body_alert(true);
+        self.sfx.alert();
+    }
+
+    fn clear_alert(&mut self) {
+        if !self.alerting {
+            return;
+        }
+        self.alerting = false;
+        set_body_alert(false);
     }
 
     /// Hand received bytes back to the browser as an in-memory blob URL, with
@@ -370,6 +405,19 @@ impl App {
                 show("challenge-empty", true);
             }
         }
+
+        // Sending a file is part of answering a challenge, so the picker only
+        // exists while one is set. Clear any stale error on the way out, or it
+        // would still be sitting there when the block reappears.
+        let has_challenge = self.challenge.is_some();
+        show("file-share", has_challenge);
+        if !has_challenge {
+            set_text("transfer-error", "");
+            // A withdrawn challenge leaves nothing to answer, so the page must
+            // not stay alerting with no way out of it.
+            self.clear_alert();
+        }
+
         self.refresh_roll_button();
     }
 
@@ -484,6 +532,7 @@ impl App {
             Msg::Challenge { text, threshold } => {
                 self.apply_challenge(Some((text.clone(), threshold)));
                 self.log_system(&format!("Daddy set a challenge, needing {threshold} or better."));
+                self.raise_alert();
             }
 
             Msg::ClearChallenge => {
@@ -806,6 +855,7 @@ fn enter_pairing(role: Role, pairing_secret: [u8; 32]) -> Result<(), JsValue> {
         incoming: None,
         next_file_id: 0,
         sending_file: false,
+        alerting: false,
     }));
 
     // A click has happened, so this is the moment audio is allowed to start.
@@ -1081,6 +1131,8 @@ fn wire_room(app: &Shared) {
 
             let mut a = app.borrow_mut();
             a.sfx.unlock();
+            // Answering in words counts as answering.
+            a.clear_alert();
             a.send(&Msg::Chat(text.clone()));
             let me = a.role.as_str();
             a.log(me, &text, "me");
@@ -1147,6 +1199,8 @@ fn wire_room(app: &Shared) {
             if a.is_daddy() || a.animation.is_some() || a.their_commit.is_none() {
                 return;
             }
+            a.clear_alert();
+
             let nonce: [u8; 32] = random();
             a.my_nonce = Some(nonce);
 
