@@ -8,7 +8,9 @@ use crate::audio::Sfx;
 use crate::crypto::random;
 use crate::dice::{commit_matches, commit_to, derive_roll, Geometry, Quat, Roll, Tumble, Vec3};
 use crate::pairing::{Pairing, Role};
-use crate::protocol::{derive_session_key, verification_phrase, Msg, Session};
+use crate::protocol::{
+    derive_session_key, verification_phrase, Msg, Session, CHUNK_BYTES, MAX_FILE_BYTES,
+};
 use crate::render::{Highlight, Renderer};
 use crate::rtc::Peer;
 use crate::signal::{Blob, Kind};
@@ -100,15 +102,61 @@ fn exec_copy() -> bool {
         .unwrap_or(false)
 }
 
-/// Yield to the browser so a status message actually paints before a long
-/// synchronous job (Argon2) blocks the thread.
-async fn next_paint() {
+async fn sleep_ms(ms: i32) {
     let promise = js_sys::Promise::new(&mut |resolve, _| {
         if let Some(window) = web_sys::window() {
-            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 16);
+            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);
         }
     });
     let _ = JsFuture::from(promise).await;
+}
+
+/// Yield to the browser so a status message actually paints before a long
+/// synchronous job (Argon2) blocks the thread.
+async fn next_paint() {
+    sleep_ms(16).await;
+}
+
+fn human_size(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if 0 == unit {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+/// A peer-supplied filename only ever becomes link text and a `download`
+/// attribute, never a path — but strip separators and control characters
+/// anyway, and bound the length.
+fn sanitise_name(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| {
+            if c.is_control() || '/' == c || '\\' == c {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+
+    let trimmed = cleaned.trim();
+    if trimmed.is_empty() {
+        "attachment".to_string()
+    } else {
+        trimmed.chars().take(120).collect()
+    }
+}
+
+fn is_previewable(mime: &str) -> bool {
+    mime.starts_with("image/") || mime.starts_with("video/")
 }
 
 async fn fetch_pairing_file() -> Result<Vec<u8>, String> {
@@ -142,6 +190,16 @@ async fn fetch_pairing_file() -> Result<Vec<u8>, String> {
 
 // ------------------------------------------------------------------- app state
 
+/// A file arriving from the peer. Held in memory and handed to the browser as
+/// a blob URL; nothing touches disk unless the viewer saves it themselves.
+struct Incoming {
+    id: u32,
+    name: String,
+    mime: String,
+    size: u64,
+    bytes: Vec<u8>,
+}
+
 struct Animation {
     tumble: Tumble,
     roll: Roll,
@@ -173,6 +231,12 @@ pub struct App {
     their_commit: Option<[u8; 32]>,
     animation: Option<Animation>,
     orientation: Quat,
+
+    incoming: Option<Incoming>,
+    /// Monotonic, so a late chunk from an abandoned transfer cannot be mistaken
+    /// for part of the current one.
+    next_file_id: u32,
+    sending_file: bool,
 }
 
 type Shared = Rc<RefCell<App>>;
@@ -221,6 +285,73 @@ impl App {
 
     fn log_system(&self, text: &str) {
         self.log("", text, "system");
+    }
+
+    fn set_transfer(&self, text: &str) {
+        set_text("transfer", text);
+    }
+
+    /// Hand received bytes back to the browser as an in-memory blob URL, with
+    /// an inline preview and a save link. The URL is never written anywhere
+    /// and dies with the tab, which is the whole storage policy.
+    fn append_media(
+        &self,
+        who: &str,
+        name: &str,
+        mime: &str,
+        bytes: &[u8],
+    ) -> Result<(), JsValue> {
+        let doc = document();
+
+        let parts = js_sys::Array::new();
+        parts.push(&js_sys::Uint8Array::from(bytes).buffer());
+
+        let options = web_sys::BlobPropertyBag::new();
+        options.set_type(mime);
+        let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &options)?;
+        let url = web_sys::Url::create_object_url_with_blob(&blob)?;
+
+        let line = doc.create_element("div")?;
+        line.set_attribute("class", "line media")?;
+
+        let label = doc.create_element("span")?;
+        label.set_attribute("class", "who")?;
+        label.set_text_content(Some(who));
+        line.append_child(&label)?;
+
+        let frame = doc.create_element("div")?;
+        frame.set_attribute("class", "attachment")?;
+
+        if mime.starts_with("image/") {
+            let image = doc.create_element("img")?;
+            image.set_attribute("src", &url)?;
+            image.set_attribute("alt", name)?;
+            frame.append_child(&image)?;
+        } else if mime.starts_with("video/") {
+            let video = doc.create_element("video")?;
+            video.set_attribute("src", &url)?;
+            video.set_attribute("controls", "")?;
+            // Stops iOS taking the video fullscreen the moment it plays.
+            video.set_attribute("playsinline", "")?;
+            frame.append_child(&video)?;
+        }
+
+        let link = doc.create_element("a")?;
+        link.set_attribute("href", &url)?;
+        link.set_attribute("download", name)?;
+        link.set_attribute("class", "download")?;
+        link.set_text_content(Some(&format!(
+            "{name} · {}",
+            human_size(bytes.len() as u64)
+        )));
+        frame.append_child(&link)?;
+
+        line.append_child(&frame)?;
+
+        let log = by_id("log");
+        log.append_child(&line)?;
+        log.set_scroll_top(log.scroll_height());
+        Ok(())
     }
 
     // -------------------------------------------------------------- challenge
@@ -416,6 +547,100 @@ impl App {
                 let roll = derive_roll(&nonce, &my_nonce);
                 self.begin_animation(roll, threshold);
             }
+
+            Msg::FileStart {
+                id,
+                name,
+                mime,
+                size,
+            } => {
+                if !is_previewable(&mime) {
+                    self.send(&Msg::FileAbort {
+                        id,
+                        reason: "only images and videos are accepted".into(),
+                    });
+                    return self.log_system("Refused a file that was not an image or a video.");
+                }
+                if size > MAX_FILE_BYTES {
+                    self.send(&Msg::FileAbort {
+                        id,
+                        reason: "larger than the agreed maximum".into(),
+                    });
+                    return self.log_system("Refused a file over the size limit.");
+                }
+
+                let name = sanitise_name(&name);
+                self.set_transfer(&format!("Receiving {name}…"));
+                self.incoming = Some(Incoming {
+                    id,
+                    name,
+                    mime,
+                    size,
+                    bytes: Vec::with_capacity(size as usize),
+                });
+            }
+
+            Msg::FileChunk { id, data } => {
+                // The borrow must end before touching the DOM helpers below.
+                let progress = match self.incoming.as_mut() {
+                    Some(incoming) if incoming.id == id => {
+                        if incoming.bytes.len() as u64 + data.len() as u64 > incoming.size {
+                            None
+                        } else {
+                            incoming.bytes.extend_from_slice(&data);
+                            Some((
+                                incoming.name.clone(),
+                                incoming.bytes.len() as u64,
+                                incoming.size,
+                            ))
+                        }
+                    }
+                    // A chunk for a transfer we are not tracking: ignore it.
+                    _ => return,
+                };
+
+                match progress {
+                    Some((name, done, total)) => {
+                        let percent = done * 100 / total.max(1);
+                        self.set_transfer(&format!("Receiving {name} — {percent}%"));
+                    }
+                    None => {
+                        self.incoming = None;
+                        self.set_transfer("");
+                        self.log_system("A file sent more data than it declared. Discarded.");
+                    }
+                }
+            }
+
+            Msg::FileEnd { id } => {
+                let Some(incoming) = self.incoming.take() else {
+                    return;
+                };
+                if incoming.id != id {
+                    return;
+                }
+                self.set_transfer("");
+
+                if incoming.bytes.len() as u64 != incoming.size {
+                    return self.log_system("A file arrived incomplete and was discarded.");
+                }
+
+                let who = self.role.other().as_str();
+                if self
+                    .append_media(who, &incoming.name, &incoming.mime, &incoming.bytes)
+                    .is_err()
+                {
+                    self.log_system("A file arrived but the browser would not display it.");
+                }
+            }
+
+            Msg::FileAbort { id, reason } => {
+                if self.incoming.as_ref().is_some_and(|f| f.id == id) {
+                    self.incoming = None;
+                }
+                self.set_transfer("");
+                self.log_system(&format!("File transfer cancelled: {reason}"));
+            }
         }
     }
 
@@ -578,6 +803,9 @@ fn enter_pairing(role: Role, pairing_secret: [u8; 32]) -> Result<(), JsValue> {
         their_commit: None,
         animation: None,
         orientation: Quat::IDENTITY,
+        incoming: None,
+        next_file_id: 0,
+        sending_file: false,
     }));
 
     // A click has happened, so this is the moment audio is allowed to start.
@@ -927,6 +1155,120 @@ fn wire_room(app: &Shared) {
             a.refresh_roll_button();
         });
     }
+
+    // --- Princess: send an image or a video
+    {
+        let app = Rc::clone(app);
+        on_click("send-file", move || {
+            let input = input_by_id("file-input");
+            let Some(file) = input.files().and_then(|list| list.get(0)) else {
+                return set_text("transfer-error", "Choose a file first.");
+            };
+            if app.borrow().sending_file {
+                return set_text("transfer-error", "One at a time — a file is already going.");
+            }
+
+            // The picker is cleared inside `send_file`, once the file has
+            // passed its checks. Clearing here would leave a rejected file
+            // showing "No file chosen" beside the error explaining why.
+            spawn_local(send_file(Rc::clone(&app), file));
+        });
+    }
+}
+
+/// Read the chosen file and push it over the channel in chunks, pausing
+/// whenever the send queue gets long. Runs as a task so the UI stays alive,
+/// and never holds an `App` borrow across an await.
+async fn send_file(app: Shared, file: web_sys::File) {
+    /// Above this many bytes queued, stop feeding the channel and let the
+    /// network drain. Without this a large file grows the queue until the
+    /// connection dies.
+    const HIGH_WATER: u32 = 1 << 20;
+
+    let name = sanitise_name(&file.name());
+    let mime = file.type_();
+
+    if !is_previewable(&mime) {
+        return set_text("transfer-error", "Only images and videos can be sent.");
+    }
+    if file.size() as u64 > MAX_FILE_BYTES {
+        return set_text(
+            "transfer-error",
+            &format!(
+                "That file is {} — the limit is {}.",
+                human_size(file.size() as u64),
+                human_size(MAX_FILE_BYTES)
+            ),
+        );
+    }
+    // Accepted, so the selection has served its purpose. The `File` handle is
+    // already ours and stays valid after the input is cleared.
+    input_by_id("file-input").set_value("");
+    set_text("transfer-error", "");
+    set_text("transfer", &format!("Reading {name}…"));
+
+    let bytes = match JsFuture::from(file.array_buffer()).await {
+        Ok(buffer) => js_sys::Uint8Array::new(&buffer).to_vec(),
+        Err(_) => {
+            set_text("transfer", "");
+            return set_text("transfer-error", "That file could not be read.");
+        }
+    };
+
+    let (peer, id) = {
+        let mut a = app.borrow_mut();
+        a.next_file_id += 1;
+        a.sending_file = true;
+        let id = a.next_file_id;
+        a.send(&Msg::FileStart {
+            id,
+            name: name.clone(),
+            mime: mime.clone(),
+            size: bytes.len() as u64,
+        });
+        (Rc::clone(&a.peer), id)
+    };
+
+    let total = bytes.len();
+    let mut sent = 0usize;
+
+    for chunk in bytes.chunks(CHUNK_BYTES) {
+        while peer.buffered_amount() > HIGH_WATER {
+            if !peer.is_open() {
+                let mut a = app.borrow_mut();
+                a.sending_file = false;
+                a.log_system("The connection closed part-way through a file.");
+                drop(a);
+                return set_text("transfer", "");
+            }
+            sleep_ms(25).await;
+        }
+
+        app.borrow_mut().send(&Msg::FileChunk {
+            id,
+            data: chunk.to_vec(),
+        });
+
+        sent += chunk.len();
+        set_text(
+            "transfer",
+            &format!("Sending {name} — {}%", sent * 100 / total.max(1)),
+        );
+    }
+
+    {
+        let mut a = app.borrow_mut();
+        a.send(&Msg::FileEnd { id });
+        a.sending_file = false;
+
+        // Show the sender their own attachment, so the log reads the same on
+        // both screens.
+        let me = a.role.as_str();
+        if a.append_media(me, &name, &mime, &bytes).is_err() {
+            a.log_system("Sent, but your own browser would not preview it.");
+        }
+    }
+    set_text("transfer", "");
 }
 
 /// The animation callback holds a handle to itself so it can re-arm each frame.

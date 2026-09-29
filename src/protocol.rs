@@ -22,6 +22,21 @@ pub enum Msg {
     Reveal { round: u32, nonce: [u8; 32] },
     /// Daddy opens his commitment; both sides now derive the same result.
     Open { round: u32, nonce: [u8; 32] },
+
+    /// Announces a file. Chunks follow, then `FileEnd`.
+    FileStart {
+        id: u32,
+        name: String,
+        mime: String,
+        size: u64,
+    },
+    /// One slice of the file in flight. The data channel is ordered and
+    /// reliable, so chunks carry no index of their own.
+    FileChunk { id: u32, data: Vec<u8> },
+    FileEnd { id: u32 },
+    /// Sent when the sender gives up, so the receiver can drop what it holds
+    /// instead of waiting for bytes that will never arrive.
+    FileAbort { id: u32, reason: String },
 }
 
 pub(crate) const TAG_CHAT: u8 = 1;
@@ -30,9 +45,26 @@ pub(crate) const TAG_CLEAR: u8 = 3;
 pub(crate) const TAG_COMMIT: u8 = 4;
 pub(crate) const TAG_REVEAL: u8 = 5;
 pub(crate) const TAG_OPEN: u8 = 6;
+pub(crate) const TAG_FILE_START: u8 = 7;
+pub(crate) const TAG_FILE_CHUNK: u8 = 8;
+pub(crate) const TAG_FILE_END: u8 = 9;
+pub(crate) const TAG_FILE_ABORT: u8 = 10;
 
 /// Bounded so a peer cannot force an unbounded allocation.
 pub const MAX_TEXT: usize = 2000;
+
+/// Filenames and MIME types are short. Anything longer is a mistake or an
+/// attempt to make the receiver allocate.
+pub const MAX_NAME: usize = 260;
+
+/// The largest file the receiver will assemble. Both sides hold the whole
+/// thing in memory — nothing is written to disk until someone saves it — so
+/// this is a real ceiling, not a formality.
+pub const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Payload carried by one chunk, comfortably under every browser's
+/// data-channel message limit once AEAD and framing overhead are added.
+pub const CHUNK_BYTES: usize = 32 * 1024;
 
 impl Msg {
     pub fn encode(&self) -> Vec<u8> {
@@ -63,6 +95,33 @@ impl Msg {
                 out.extend_from_slice(&round.to_be_bytes());
                 out.extend_from_slice(nonce);
             }
+            Msg::FileStart {
+                id,
+                name,
+                mime,
+                size,
+            } => {
+                out.push(TAG_FILE_START);
+                out.extend_from_slice(&id.to_be_bytes());
+                out.extend_from_slice(&size.to_be_bytes());
+                put_str_max(&mut out, name, MAX_NAME);
+                put_str_max(&mut out, mime, MAX_NAME);
+            }
+            Msg::FileChunk { id, data } => {
+                out.push(TAG_FILE_CHUNK);
+                out.extend_from_slice(&id.to_be_bytes());
+                out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+                out.extend_from_slice(data);
+            }
+            Msg::FileEnd { id } => {
+                out.push(TAG_FILE_END);
+                out.extend_from_slice(&id.to_be_bytes());
+            }
+            Msg::FileAbort { id, reason } => {
+                out.push(TAG_FILE_ABORT);
+                out.extend_from_slice(&id.to_be_bytes());
+                put_str_max(&mut out, reason, MAX_TEXT);
+            }
         }
         out
     }
@@ -91,13 +150,69 @@ impl Msg {
                 let (round, nonce) = take_round_and_32(rest)?;
                 Ok(Msg::Open { round, nonce })
             }
+            TAG_FILE_START => {
+                if rest.len() < 12 {
+                    return Err("truncated file header".into());
+                }
+                let id = u32::from_be_bytes(rest[0..4].try_into().unwrap());
+                let size = u64::from_be_bytes(rest[4..12].try_into().unwrap());
+                if size > MAX_FILE_BYTES {
+                    return Err("that file is larger than the agreed maximum".into());
+                }
+                let (name, rest) = take_str_max(&rest[12..], MAX_NAME)?;
+                let (mime, _) = take_str_max(rest, MAX_NAME)?;
+                Ok(Msg::FileStart {
+                    id,
+                    name,
+                    mime,
+                    size,
+                })
+            }
+            TAG_FILE_CHUNK => {
+                if rest.len() < 8 {
+                    return Err("truncated chunk header".into());
+                }
+                let id = u32::from_be_bytes(rest[0..4].try_into().unwrap());
+                let len = u32::from_be_bytes(rest[4..8].try_into().unwrap()) as usize;
+                if len > CHUNK_BYTES {
+                    return Err("chunk exceeds the agreed size".into());
+                }
+                let body = &rest[8..];
+                if body.len() < len {
+                    return Err("truncated chunk body".into());
+                }
+                Ok(Msg::FileChunk {
+                    id,
+                    data: body[..len].to_vec(),
+                })
+            }
+            TAG_FILE_END => {
+                if rest.len() < 4 {
+                    return Err("truncated file end".into());
+                }
+                Ok(Msg::FileEnd {
+                    id: u32::from_be_bytes(rest[0..4].try_into().unwrap()),
+                })
+            }
+            TAG_FILE_ABORT => {
+                if rest.len() < 4 {
+                    return Err("truncated file abort".into());
+                }
+                let id = u32::from_be_bytes(rest[0..4].try_into().unwrap());
+                let (reason, _) = take_str_max(&rest[4..], MAX_TEXT)?;
+                Ok(Msg::FileAbort { id, reason })
+            }
             other => Err(format!("unknown message tag {other}")),
         }
     }
 }
 
 fn put_str(out: &mut Vec<u8>, text: &str) {
-    let truncated = clamp_chars(text, MAX_TEXT);
+    put_str_max(out, text, MAX_TEXT);
+}
+
+fn put_str_max(out: &mut Vec<u8>, text: &str, max: usize) {
+    let truncated = clamp_chars(text, max);
     out.extend_from_slice(&(truncated.len() as u16).to_be_bytes());
     out.extend_from_slice(truncated.as_bytes());
 }
@@ -115,11 +230,15 @@ fn clamp_chars(text: &str, max_bytes: usize) -> &str {
 }
 
 fn take_str(bytes: &[u8]) -> Result<(String, &[u8]), String> {
+    take_str_max(bytes, MAX_TEXT)
+}
+
+fn take_str_max(bytes: &[u8], max: usize) -> Result<(String, &[u8]), String> {
     if bytes.len() < 2 {
         return Err("truncated string header".into());
     }
     let len = u16::from_be_bytes([bytes[0], bytes[1]]) as usize;
-    if len > MAX_TEXT {
+    if len > max {
         return Err("string exceeds maximum length".into());
     }
     let rest = &bytes[2..];
