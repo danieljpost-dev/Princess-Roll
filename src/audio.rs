@@ -10,54 +10,87 @@ use web_sys::{AudioContext, BiquadFilterType, GainNode, OscillatorType};
 
 pub struct Sfx {
     context: Option<AudioContext>,
-}
-
-impl Default for Sfx {
-    fn default() -> Self {
-        Self::new()
-    }
+    /// Everything routes through here, so the level is set in one place
+    /// rather than threaded through every note of every sound.
+    master: Option<GainNode>,
+    /// 0.0 to 1.0.
+    volume: f32,
 }
 
 impl Sfx {
-    pub fn new() -> Self {
-        Sfx { context: None }
+    pub fn new(volume: f32) -> Self {
+        Sfx {
+            context: None,
+            master: None,
+            volume: volume.clamp(0.0, 1.0),
+        }
+    }
+
+    pub fn set_volume(&mut self, volume: f32) {
+        self.volume = volume.clamp(0.0, 1.0);
+        if let Some(master) = &self.master {
+            master.gain().set_value(self.volume);
+        }
+    }
+
+    pub fn muted(&self) -> bool {
+        0.0 == self.volume
     }
 
     /// Browsers suspend audio contexts created outside a gesture, so this both
-    /// creates and resumes. Audio never being available is not an error worth
-    /// interrupting anyone over — the dice still roll in silence.
-    fn context(&mut self) -> Option<&AudioContext> {
+    /// creates and resumes. Audio being unavailable is not worth interrupting
+    /// anyone over — the dice still roll in silence.
+    ///
+    /// Returns owned handles rather than references: a borrow of `self` held
+    /// while a sound is built would stop the caller touching anything else.
+    fn ready(&mut self) -> Option<(AudioContext, GainNode)> {
         if self.context.is_none() {
-            self.context = AudioContext::new().ok();
+            let context = AudioContext::new().ok()?;
+            let master = context.create_gain().ok()?;
+            master.gain().set_value(self.volume);
+            master.connect_with_audio_node(&context.destination()).ok()?;
+
+            self.master = Some(master);
+            self.context = Some(context);
         }
-        let context = self.context.as_ref()?;
+
+        let context = self.context.clone()?;
         if web_sys::AudioContextState::Suspended == context.state() {
             let _ = context.resume();
         }
-        Some(context)
+        Some((context, self.master.clone()?))
     }
 
     /// Call from any click handler to unblock audio before it is first needed.
     pub fn unlock(&mut self) {
-        let _ = self.context();
+        if self.muted() {
+            return;
+        }
+        let _ = self.ready();
     }
 
     pub fn success(&mut self) {
-        if let Some(context) = self.context() {
-            let _ = fanfare(context);
-        }
+        self.play(fanfare);
     }
 
     pub fn failure(&mut self) {
-        if let Some(context) = self.context() {
-            let _ = sad_trumpet(context);
-        }
+        self.play(sad_trumpet);
     }
 
-    /// A summons, not a verdict — played when a challenge lands.
+    /// A summons, not a verdict — played when a challenge lands, and as a
+    /// preview when the level is changed.
     pub fn alert(&mut self) {
-        if let Some(context) = self.context() {
-            let _ = chime(context);
+        self.play(chime);
+    }
+
+    /// Muted means no oscillators are scheduled at all, rather than scheduled
+    /// into a silent gain.
+    fn play(&mut self, sound: fn(&AudioContext, &GainNode) -> Result<(), JsValue>) {
+        if self.muted() {
+            return;
+        }
+        if let Some((context, out)) = self.ready() {
+            let _ = sound(&context, &out);
         }
     }
 }
@@ -81,7 +114,7 @@ fn envelope(
 }
 
 /// Rising major arpeggio landing on the octave: the "ta-da".
-fn fanfare(context: &AudioContext) -> Result<(), JsValue> {
+fn fanfare(context: &AudioContext, out: &GainNode) -> Result<(), JsValue> {
     let now = context.current_time();
     // C5, E5, G5, then C6 held long.
     let notes: [(f32, f64, f64); 4] = [
@@ -107,7 +140,7 @@ fn fanfare(context: &AudioContext) -> Result<(), JsValue> {
 
             let gain = envelope(context, start, duration, level)?;
             osc.connect_with_audio_node(&gain)?;
-            gain.connect_with_audio_node(&context.destination())?;
+            gain.connect_with_audio_node(out)?;
 
             osc.start_with_when(start)?;
             osc.stop_with_when(start + duration + 0.05)?;
@@ -118,7 +151,7 @@ fn fanfare(context: &AudioContext) -> Result<(), JsValue> {
 
 /// Two rising bell tones, struck twice. Kept deliberately unlike the win and
 /// lose stings: those report a result, this one asks for attention.
-fn chime(context: &AudioContext) -> Result<(), JsValue> {
+fn chime(context: &AudioContext, out: &GainNode) -> Result<(), JsValue> {
     let now = context.current_time();
 
     // B5 then E6, struck again after a short gap so it reads as a summons
@@ -142,7 +175,7 @@ fn chime(context: &AudioContext) -> Result<(), JsValue> {
 
             let gain = envelope(context, start, 0.55, level)?;
             osc.connect_with_audio_node(&gain)?;
-            gain.connect_with_audio_node(&context.destination())?;
+            gain.connect_with_audio_node(out)?;
 
             osc.start_with_when(start)?;
             osc.stop_with_when(start + 0.6)?;
@@ -152,7 +185,7 @@ fn chime(context: &AudioContext) -> Result<(), JsValue> {
 }
 
 /// The descending "wah-wah-wah-waaah", with the last note bending flat.
-fn sad_trumpet(context: &AudioContext) -> Result<(), JsValue> {
+fn sad_trumpet(context: &AudioContext, out: &GainNode) -> Result<(), JsValue> {
     let now = context.current_time();
     // Three clipped notes walking down, then a long one that sags.
     let notes: [(f32, f32, f64, f64); 4] = [
@@ -190,7 +223,7 @@ fn sad_trumpet(context: &AudioContext) -> Result<(), JsValue> {
 
         osc.connect_with_audio_node(&filter)?;
         filter.connect_with_audio_node(&gain)?;
-        gain.connect_with_audio_node(&context.destination())?;
+        gain.connect_with_audio_node(out)?;
 
         osc.start_with_when(start)?;
         osc.stop_with_when(start + duration + 0.05)?;

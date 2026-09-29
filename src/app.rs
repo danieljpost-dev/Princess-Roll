@@ -1,8 +1,7 @@
 //! Wiring: the gate, the paste handshake, the room, and the frame loop.
 //!
-//! Deliberately absent from this file: any call to localStorage,
-//! sessionStorage, IndexedDB or document.cookie. Everything the app knows lives
-//! in this struct, and closing the tab is the whole of the privacy model.
+//! The sound level is the only thing persisted, under VOLUME_KEY. Everything
+//! else the app knows lives in this struct and dies with the tab.
 
 use crate::audio::Sfx;
 use crate::crypto::random;
@@ -24,6 +23,38 @@ use web_sys::{Document, HtmlInputElement, HtmlTextAreaElement};
 use x25519_dalek::{PublicKey, StaticSecret};
 
 const MAX_CHALLENGE: usize = 240;
+
+/// The only key this app ever writes.
+const VOLUME_KEY: &str = "princess-roll:volume";
+const VOLUME_STEPS: [u8; 4] = [0, 25, 50, 100];
+const DEFAULT_VOLUME: u8 = 100;
+
+/// Throws in a private window or with site data blocked, so every access is
+/// fallible and failure just means "no preference".
+fn local_storage() -> Option<web_sys::Storage> {
+    web_sys::window()?.local_storage().ok().flatten()
+}
+
+fn read_volume() -> u8 {
+    let stored = local_storage()
+        .and_then(|storage| storage.get_item(VOLUME_KEY).ok().flatten())
+        .and_then(|raw| raw.parse::<u8>().ok());
+
+    match stored {
+        Some(percent) if VOLUME_STEPS.contains(&percent) => percent,
+        _ => DEFAULT_VOLUME,
+    }
+}
+
+fn write_volume(percent: u8) {
+    if let Some(storage) = local_storage() {
+        let _ = storage.set_item(VOLUME_KEY, &percent.to_string());
+    }
+}
+
+fn show_volume(percent: u8) {
+    select_by_id("volume").set_value(&percent.to_string());
+}
 
 // ------------------------------------------------------------------ DOM helpers
 
@@ -53,6 +84,18 @@ fn html_by_id(id: &str) -> web_sys::HtmlElement {
 
 fn input_by_id(id: &str) -> HtmlInputElement {
     by_id(id).dyn_into().expect("an input element")
+}
+
+fn select_by_id(id: &str) -> web_sys::HtmlSelectElement {
+    by_id(id).dyn_into().expect("a select element")
+}
+
+fn on_change(id: &str, handler: impl FnMut() + 'static) {
+    let closure = Closure::<dyn FnMut()>::new(handler);
+    by_id(id)
+        .add_event_listener_with_callback("change", closure.as_ref().unchecked_ref())
+        .unwrap_or_else(|_| panic!("could not attach a change handler to #{id}"));
+    closure.forget();
 }
 
 fn textarea_by_id(id: &str) -> HtmlTextAreaElement {
@@ -909,7 +952,7 @@ fn enter_pairing(role: Role, pairing_secret: [u8; 32]) -> Result<(), JsValue> {
         session: None,
         geometry,
         renderer: None,
-        sfx: Sfx::new(),
+        sfx: Sfx::new(read_volume() as f32 / 100.0),
         challenge: None,
         round: 0,
         my_nonce: None,
@@ -1169,6 +1212,7 @@ fn open_room(app: &Shared) {
             Err(_) => a.log_system("WebGL2 is unavailable, so the die will not be drawn."),
         }
 
+        show_volume(read_volume());
         a.apply_challenge(None);
         a.log_system(&format!("Connected as {}. Compare the phrase above.", role.as_str()));
     }
@@ -1271,6 +1315,24 @@ fn wire_room(app: &Shared) {
             let round = a.round;
             a.send(&Msg::Reveal { round, nonce });
             a.refresh_roll_button();
+        });
+    }
+
+    // --- sound level
+    {
+        let app = Rc::clone(app);
+        on_change("volume", move || {
+            let percent = select_by_id("volume")
+                .value()
+                .parse::<u8>()
+                .unwrap_or(DEFAULT_VOLUME);
+            {
+                let mut a = app.borrow_mut();
+                a.sfx.set_volume(percent as f32 / 100.0);
+                // Play it back so the level is audible, not just asserted.
+                a.sfx.alert();
+            }
+            write_volume(percent);
         });
     }
 

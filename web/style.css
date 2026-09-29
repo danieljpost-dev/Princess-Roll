@@ -150,19 +150,33 @@ button.big { padding: 14px 28px; font-size: 1.05rem; }
   letter-spacing: 0.02em;
 }
 
-.verify { font-size: 0.82rem; color: var(--muted); }
+.verify {
+  font-size: 0.82rem;
+  color: var(--muted);
+  min-width: 0;
+}
 .verify strong {
   color: var(--ink);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+/* Grouped so the two right-hand items wrap together instead of the auto
+   margin stranding one of them on its own line. */
+.bar-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .link-state {
-  margin-left: auto;
   font-size: 0.78rem;
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.07em;
+  white-space: nowrap;
 }
 
 /* ------------------------------------------------------------------- stage */
@@ -270,6 +284,23 @@ hr {
   border-top: 1px solid var(--edge);
   margin: 18px 0 16px;
 }
+
+/* ------------------------------------------------------------------ volume */
+
+select.volume {
+  width: auto;
+  padding: 4px 26px 4px 10px;
+  font-size: 0.78rem;
+  color: var(--muted);
+  border-radius: 8px;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6' fill='none' stroke='%23a898b6' stroke-width='1.5'><path d='M1 1l4 4 4-4'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+}
+select.volume option { background: var(--bg-raised); color: var(--ink); }
 
 /* ------------------------------------------------------------------- alert */
 /* Princess's page while a challenge is waiting on her. Driven entirely by the

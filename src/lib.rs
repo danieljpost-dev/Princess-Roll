@@ -2,9 +2,9 @@
 //!
 //! There is no server. The page is static, the two browsers talk directly over
 //! WebRTC, and every payload is sealed with a key that exists only in memory
-//! for the life of the tab. Nothing is written to localStorage, sessionStorage,
-//! IndexedDB or cookies, and no request leaves the page except to public STUN
-//! servers while the connection is being established.
+//! for the life of the tab. The sound level is the only thing written to
+//! localStorage; nothing else is stored anywhere, and no request leaves the
+//! page except to public STUN servers while connecting.
 
 pub mod crypto;
 pub mod dice;
