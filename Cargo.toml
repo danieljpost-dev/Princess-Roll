@@ -93,6 +93,13 @@ features = [
   "Response",
   "Request",
   "RequestInit",
+  # File transfer: read the chosen file, hand the received bytes back to the
+  # browser as an in-memory blob URL.
+  "Blob",
+  "BlobPropertyBag",
+  "File",
+  "FileList",
+  "Url",
 ]
 
 # rpassword keeps the secret codes off the terminal scrollback during setup.

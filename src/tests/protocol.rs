@@ -178,3 +178,152 @@ fn the_verification_phrase_is_stable_and_key_dependent() {
     assert_eq!(syllables.len(), 4);
     assert!(syllables.iter().all(|s| s.len() == 3));
 }
+
+// ------------------------------------------------------------ file transfer
+
+#[test]
+fn file_messages_survive_a_roundtrip() {
+    for msg in [
+        Msg::FileStart {
+            id: 3,
+            name: "kitten.png".into(),
+            mime: "image/png".into(),
+            size: 4096,
+        },
+        Msg::FileChunk {
+            id: 3,
+            data: vec![0xAB; CHUNK_BYTES],
+        },
+        Msg::FileEnd { id: 3 },
+        Msg::FileAbort {
+            id: 3,
+            reason: "changed my mind".into(),
+        },
+    ] {
+        assert_eq!(Msg::decode(&msg.encode()).unwrap(), msg);
+    }
+}
+
+#[test]
+fn an_empty_chunk_is_still_valid() {
+    let msg = Msg::FileChunk {
+        id: 1,
+        data: Vec::new(),
+    };
+    assert_eq!(Msg::decode(&msg.encode()).unwrap(), msg);
+}
+
+#[test]
+fn chunk_bytes_are_preserved_exactly() {
+    let data: Vec<u8> = (0..CHUNK_BYTES).map(|i| (i % 251) as u8).collect();
+    let decoded = Msg::decode(
+        &Msg::FileChunk {
+            id: 9,
+            data: data.clone(),
+        }
+        .encode(),
+    )
+    .unwrap();
+
+    match decoded {
+        Msg::FileChunk { data: got, .. } => assert_eq!(got, data),
+        other => panic!("expected a chunk, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_declared_size_over_the_limit_is_refused() {
+    let mut frame = vec![TAG_FILE_START];
+    frame.extend_from_slice(&1u32.to_be_bytes());
+    frame.extend_from_slice(&(MAX_FILE_BYTES + 1).to_be_bytes());
+    frame.extend_from_slice(&0u16.to_be_bytes());
+    frame.extend_from_slice(&0u16.to_be_bytes());
+
+    assert!(
+        Msg::decode(&frame).is_err(),
+        "a peer could declare an arbitrarily large allocation"
+    );
+}
+
+#[test]
+fn an_oversized_chunk_is_refused() {
+    let mut frame = vec![TAG_FILE_CHUNK];
+    frame.extend_from_slice(&1u32.to_be_bytes());
+    frame.extend_from_slice(&((CHUNK_BYTES + 1) as u32).to_be_bytes());
+    frame.extend_from_slice(&vec![0u8; CHUNK_BYTES + 1]);
+
+    assert!(Msg::decode(&frame).is_err());
+}
+
+#[test]
+fn a_chunk_shorter_than_its_header_claims_is_refused() {
+    let mut frame = vec![TAG_FILE_CHUNK];
+    frame.extend_from_slice(&1u32.to_be_bytes());
+    frame.extend_from_slice(&512u32.to_be_bytes());
+    frame.extend_from_slice(&[0u8; 8]);
+
+    assert!(Msg::decode(&frame).is_err());
+}
+
+#[test]
+fn an_overlong_filename_is_refused_rather_than_allocated() {
+    let mut frame = vec![TAG_FILE_START];
+    frame.extend_from_slice(&1u32.to_be_bytes());
+    frame.extend_from_slice(&1024u64.to_be_bytes());
+    frame.extend_from_slice(&((MAX_NAME + 1) as u16).to_be_bytes());
+    frame.extend_from_slice(&vec![b'x'; MAX_NAME + 1]);
+
+    assert!(Msg::decode(&frame).is_err());
+}
+
+#[test]
+fn truncated_file_messages_error_rather_than_panic() {
+    assert!(Msg::decode(&[TAG_FILE_START]).is_err());
+    assert!(Msg::decode(&[TAG_FILE_START, 0, 0, 0, 1]).is_err());
+    assert!(Msg::decode(&[TAG_FILE_CHUNK, 0, 0]).is_err());
+    assert!(Msg::decode(&[TAG_FILE_END]).is_err());
+    assert!(Msg::decode(&[TAG_FILE_ABORT, 0, 0, 0]).is_err());
+}
+
+#[test]
+fn a_file_travels_sealed_and_in_order() {
+    let key = [5u8; 32];
+    let mut sender = Session::new(key, Role::Princess);
+    let mut receiver = Session::new(key, Role::Daddy);
+
+    let payload: Vec<u8> = (0..CHUNK_BYTES * 3 + 17).map(|i| (i % 253) as u8).collect();
+
+    let mut frames = vec![sender.seal_msg(&Msg::FileStart {
+        id: 1,
+        name: "clip.mp4".into(),
+        mime: "video/mp4".into(),
+        size: payload.len() as u64,
+    })];
+    for chunk in payload.chunks(CHUNK_BYTES) {
+        frames.push(sender.seal_msg(&Msg::FileChunk {
+            id: 1,
+            data: chunk.to_vec(),
+        }));
+    }
+    frames.push(sender.seal_msg(&Msg::FileEnd { id: 1 }));
+
+    // Nothing recognisable should be visible on the wire.
+    assert!(
+        !frames[0].windows(8).any(|w| w == b"clip.mp4"),
+        "the filename leaked into a sealed frame"
+    );
+
+    let mut received = Vec::new();
+    let mut ended = false;
+    for frame in &frames {
+        match receiver.open_msg(frame).unwrap() {
+            Msg::FileChunk { data, .. } => received.extend_from_slice(&data),
+            Msg::FileEnd { .. } => ended = true,
+            Msg::FileStart { size, .. } => assert_eq!(size, payload.len() as u64),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    assert!(ended);
+    assert_eq!(received, payload, "the file did not survive the round trip");
+}

@@ -148,6 +148,15 @@
 
       <div id="princess-controls" class="hidden controls">
         <p class="muted">Daddy sets the challenge. You roll against it.</p>
+
+        <label class="field">
+          <span>Send an image or video</span>
+          <input id="file-input" type="file" accept="image/*,video/*">
+        </label>
+        <div class="row">
+          <button id="send-file">Send file</button>
+        </div>
+        <p id="transfer-error" class="error"></p>
       </div>
 
       <div class="row roll-row">
@@ -158,6 +167,7 @@
 
     <section class="chat">
       <div id="log" class="log" aria-live="polite"></div>
+      <p id="transfer" class="status" aria-live="polite"></p>
       <div class="row">
         <input id="chat-input" type="text" maxlength="2000" placeholder="Say something"
                autocomplete="off">

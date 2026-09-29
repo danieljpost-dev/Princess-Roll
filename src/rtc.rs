@@ -255,6 +255,16 @@ impl Peer {
             .is_some_and(|c| RtcDataChannelState::Open == c.ready_state())
     }
 
+    /// Bytes queued in the channel but not yet on the wire. A file transfer
+    /// must watch this: pushing chunks in faster than the network drains them
+    /// grows the queue without bound and eventually kills the connection.
+    pub fn buffered_amount(&self) -> u32 {
+        self.channel
+            .borrow()
+            .as_ref()
+            .map_or(0, |channel| channel.buffered_amount())
+    }
+
     pub fn send(&self, payload: &[u8]) -> Result<(), JsValue> {
         match self.channel.borrow().as_ref() {
             Some(channel) => channel.send_with_u8_array(payload),
