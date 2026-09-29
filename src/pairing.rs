@@ -49,18 +49,21 @@ impl Role {
     }
 }
 
-fn aad_for(role: Role) -> Vec<u8> {
+pub(crate) fn aad_for(role: Role) -> Vec<u8> {
     let mut aad = AAD_PREFIX.to_vec();
     aad.push(role.tag());
     aad
 }
 
 pub struct Pairing {
-    m_kib: u32,
-    t_cost: u32,
-    p_cost: u32,
-    salt: [u8; 16],
-    wraps: [([u8; 12], Vec<u8>); 2],
+    // `pub(crate)` so the test suite can build one directly. A `pub`
+    // struct in a `pub` module still hides these from outside the crate,
+    // so the published API is unchanged.
+    pub(crate) m_kib: u32,
+    pub(crate) t_cost: u32,
+    pub(crate) p_cost: u32,
+    pub(crate) salt: [u8; 16],
+    pub(crate) wraps: [([u8; 12], Vec<u8>); 2],
 }
 
 impl Pairing {
@@ -96,44 +99,6 @@ impl Pairing {
             },
             secret,
         ))
-    }
-
-    /// The same construction at trivial Argon2 cost, for tests only.
-    ///
-    /// The real parameters are deliberately expensive, which is the point in
-    /// production and unusable in a suite that builds dozens of these. Lives
-    /// here rather than in the test module so the struct's fields can stay
-    /// private.
-    #[cfg(all(test, feature = "tests"))]
-    pub(crate) fn for_test(daddy_code: &str, princess_code: &str) -> (Self, [u8; 32]) {
-        const CHEAP_M_KIB: u32 = 8;
-        const CHEAP_T_COST: u32 = 1;
-        const CHEAP_P_COST: u32 = 1;
-
-        let salt: [u8; 16] = random();
-        let secret: [u8; 32] = random();
-
-        let mut wraps = Vec::with_capacity(2);
-        for (role, code) in [(Role::Daddy, daddy_code), (Role::Princess, princess_code)] {
-            let key = argon2_key(code, &salt, CHEAP_M_KIB, CHEAP_T_COST, CHEAP_P_COST)
-                .expect("cheap argon2 parameters are valid");
-            let nonce: [u8; 12] = random();
-            wraps.push((nonce, seal(&key, &nonce, &aad_for(role), &secret)));
-        }
-
-        let princess_wrap = wraps.pop().unwrap();
-        let daddy_wrap = wraps.pop().unwrap();
-
-        (
-            Pairing {
-                m_kib: CHEAP_M_KIB,
-                t_cost: CHEAP_T_COST,
-                p_cost: CHEAP_P_COST,
-                salt,
-                wraps: [daddy_wrap, princess_wrap],
-            },
-            secret,
-        )
     }
 
     /// Try a typed code. One Argon2 pass, then two cheap AEAD trials — so the

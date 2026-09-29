@@ -1,11 +1,41 @@
 //! Tests for [`crate::pairing`].
 
-use crate::pairing::{Pairing, Role, FILE_LEN};
+use crate::crypto::{argon2_key, random, seal};
+use crate::pairing::{aad_for, Pairing, Role, FILE_LEN};
 
-/// Argon2 at production cost is far too slow to run dozens of times in a test
-/// suite. `for_test` builds the identical structure at a trivial cost.
-fn cheap(daddy: &str, princess: &str) -> (Pairing, [u8; 32]) {
-    Pairing::for_test(daddy, princess)
+/// The same construction as `Pairing::create`, at trivial Argon2 cost.
+///
+/// The real parameters are deliberately expensive — that is the point in
+/// production, and unusable in a suite that builds dozens of these.
+fn cheap(daddy_code: &str, princess_code: &str) -> (Pairing, [u8; 32]) {
+    const CHEAP_M_KIB: u32 = 8;
+    const CHEAP_T_COST: u32 = 1;
+    const CHEAP_P_COST: u32 = 1;
+
+    let salt: [u8; 16] = random();
+    let secret: [u8; 32] = random();
+
+    let mut wraps = Vec::with_capacity(2);
+    for (role, code) in [(Role::Daddy, daddy_code), (Role::Princess, princess_code)] {
+        let key = argon2_key(code, &salt, CHEAP_M_KIB, CHEAP_T_COST, CHEAP_P_COST)
+            .expect("cheap argon2 parameters are valid");
+        let nonce: [u8; 12] = random();
+        wraps.push((nonce, seal(&key, &nonce, &aad_for(role), &secret)));
+    }
+
+    let princess_wrap = wraps.pop().unwrap();
+    let daddy_wrap = wraps.pop().unwrap();
+
+    (
+        Pairing {
+            m_kib: CHEAP_M_KIB,
+            t_cost: CHEAP_T_COST,
+            p_cost: CHEAP_P_COST,
+            salt,
+            wraps: [daddy_wrap, princess_wrap],
+        },
+        secret,
+    )
 }
 
 #[test]
