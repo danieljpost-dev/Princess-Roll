@@ -327,3 +327,56 @@ fn a_file_travels_sealed_and_in_order() {
     assert!(ended);
     assert_eq!(received, payload, "the file did not survive the round trip");
 }
+
+#[test]
+fn the_size_limit_exceeds_what_a_32_bit_usize_can_hold() {
+    // This is why the file never passes through a Rust Vec: on wasm32 a cast
+    // of this value to usize would silently truncate. If the limit is ever
+    // lowered below 4 GiB, the streaming design is no longer forced and this
+    // test should be revisited rather than deleted.
+    assert!(
+        MAX_FILE_BYTES > u32::MAX as u64,
+        "the limit no longer exceeds u32::MAX"
+    );
+    assert_eq!(MAX_FILE_BYTES, 4608 * 1024 * 1024, "4.5 GiB");
+}
+
+#[test]
+fn a_size_at_the_limit_round_trips_and_one_over_is_refused() {
+    let at_limit = Msg::FileStart {
+        id: 1,
+        name: "huge.mp4".into(),
+        mime: "video/mp4".into(),
+        size: MAX_FILE_BYTES,
+    };
+    assert_eq!(Msg::decode(&at_limit.encode()).unwrap(), at_limit);
+
+    let mut over = vec![TAG_FILE_START];
+    over.extend_from_slice(&1u32.to_be_bytes());
+    over.extend_from_slice(&(MAX_FILE_BYTES + 1).to_be_bytes());
+    over.extend_from_slice(&0u16.to_be_bytes());
+    over.extend_from_slice(&0u16.to_be_bytes());
+    assert!(Msg::decode(&over).is_err());
+}
+
+#[test]
+fn a_multi_gigabyte_size_survives_the_wire_intact() {
+    // Four billion-plus must arrive unchanged; a u32 field or a usize cast
+    // anywhere on this path would mangle it.
+    let declared = 4_000_000_000u64;
+    let decoded = Msg::decode(
+        &Msg::FileStart {
+            id: 7,
+            name: "film.mkv".into(),
+            mime: "video/x-matroska".into(),
+            size: declared,
+        }
+        .encode(),
+    )
+    .unwrap();
+
+    match decoded {
+        Msg::FileStart { size, .. } => assert_eq!(size, declared),
+        other => panic!("expected a file header, got {other:?}"),
+    }
+}

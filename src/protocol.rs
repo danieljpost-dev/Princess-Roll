@@ -57,10 +57,15 @@ pub const MAX_TEXT: usize = 2000;
 /// attempt to make the receiver allocate.
 pub const MAX_NAME: usize = 260;
 
-/// The largest file the receiver will assemble. Both sides hold the whole
-/// thing in memory — nothing is written to disk until someone saves it — so
-/// this is a real ceiling, not a formality.
-pub const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
+/// The largest file that may be sent: 4.5 GiB.
+///
+/// This is deliberately larger than wasm32 can address. Neither side ever
+/// holds the file in linear memory — the sender reads it in slices and the
+/// receiver hands each chunk straight to the browser as a blob part — so the
+/// 4 GiB wasm ceiling does not apply. It is a `u64` and must never be cast to
+/// `usize`: on wasm32 that truncates above 4,294,967,295 and this limit is
+/// above it.
+pub const MAX_FILE_BYTES: u64 = 4608 * 1024 * 1024;
 
 /// Payload carried by one chunk, comfortably under every browser's
 /// data-channel message limit once AEAD and framing overhead are added.

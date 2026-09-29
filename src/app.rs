@@ -204,14 +204,91 @@ async fn fetch_pairing_file() -> Result<Vec<u8>, String> {
 
 // ------------------------------------------------------------------- app state
 
-/// A file arriving from the peer. Held in memory and handed to the browser as
-/// a blob URL; nothing touches disk unless the viewer saves it themselves.
+/// Chunks are folded into a blob part once this much has accumulated. Keeping
+/// thousands of small typed arrays alive is what would exhaust memory; a Blob
+/// is browser-managed and may be paged to disk.
+const COALESCE_BYTES: usize = 8 * 1024 * 1024;
+
+/// A file arriving from the peer.
+///
+/// Chunks go straight to the browser as blob parts and never accumulate in a
+/// Rust `Vec`. That is not tidiness: wasm32 linear memory tops out at 4 GiB
+/// and `usize` is 32-bit, so a multi-gigabyte file cannot exist in this
+/// address space at all. Nothing is written to disk by us — whether the
+/// browser backs a large blob with a temp file is its own business — and the
+/// whole thing evaporates when the tab closes.
 struct Incoming {
     id: u32,
     name: String,
     mime: String,
     size: u64,
-    bytes: Vec<u8>,
+    received: u64,
+    /// Chunks not yet folded into a part.
+    pending: js_sys::Array,
+    pending_bytes: usize,
+    /// Sealed-off blob parts.
+    parts: js_sys::Array,
+    /// Last percentage written to the DOM. A 4 GiB file is ~147,000 chunks;
+    /// updating the page on each one would cost more than the transfer.
+    last_percent: u8,
+}
+
+impl Incoming {
+    fn new(id: u32, name: String, mime: String, size: u64) -> Incoming {
+        Incoming {
+            id,
+            name,
+            mime,
+            size,
+            received: 0,
+            pending: js_sys::Array::new(),
+            pending_bytes: 0,
+            parts: js_sys::Array::new(),
+            last_percent: u8::MAX,
+        }
+    }
+
+    fn push(&mut self, data: &[u8]) -> Result<(), JsValue> {
+        self.pending.push(&js_sys::Uint8Array::from(data));
+        self.pending_bytes += data.len();
+        self.received += data.len() as u64;
+
+        if self.pending_bytes >= COALESCE_BYTES {
+            self.fold()?;
+        }
+        Ok(())
+    }
+
+    fn fold(&mut self) -> Result<(), JsValue> {
+        if 0 == self.pending.length() {
+            return Ok(());
+        }
+        let part = web_sys::Blob::new_with_u8_array_sequence(&self.pending)?;
+        self.parts.push(&part);
+        self.pending = js_sys::Array::new();
+        self.pending_bytes = 0;
+        Ok(())
+    }
+
+    /// The Blob constructor accepts Blobs as parts, and this binding takes an
+    /// untyped sequence, so the finished file is assembled without any of it
+    /// passing back through wasm memory.
+    fn finish(&mut self) -> Result<web_sys::Blob, JsValue> {
+        self.fold()?;
+        let options = web_sys::BlobPropertyBag::new();
+        options.set_type(&self.mime);
+        web_sys::Blob::new_with_u8_array_sequence_and_options(&self.parts, &options)
+    }
+
+    /// `Some(percent)` only when the figure actually changed.
+    fn progress(&mut self) -> Option<u8> {
+        let percent = (self.received.saturating_mul(100) / self.size.max(1)).min(100) as u8;
+        if percent == self.last_percent {
+            return None;
+        }
+        self.last_percent = percent;
+        Some(percent)
+    }
 }
 
 struct Animation {
@@ -334,17 +411,10 @@ impl App {
         who: &str,
         name: &str,
         mime: &str,
-        bytes: &[u8],
+        blob: &web_sys::Blob,
     ) -> Result<(), JsValue> {
         let doc = document();
-
-        let parts = js_sys::Array::new();
-        parts.push(&js_sys::Uint8Array::from(bytes).buffer());
-
-        let options = web_sys::BlobPropertyBag::new();
-        options.set_type(mime);
-        let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &options)?;
-        let url = web_sys::Url::create_object_url_with_blob(&blob)?;
+        let url = web_sys::Url::create_object_url_with_blob(blob)?;
 
         let line = doc.create_element("div")?;
         line.set_attribute("class", "line media")?;
@@ -375,10 +445,7 @@ impl App {
         link.set_attribute("href", &url)?;
         link.set_attribute("download", name)?;
         link.set_attribute("class", "download")?;
-        link.set_text_content(Some(&format!(
-            "{name} · {}",
-            human_size(bytes.len() as u64)
-        )));
+        link.set_text_content(Some(&format!("{name} · {}", human_size(blob.size() as u64))));
         frame.append_child(&link)?;
 
         line.append_child(&frame)?;
@@ -620,49 +687,42 @@ impl App {
 
                 let name = sanitise_name(&name);
                 self.set_transfer(&format!("Receiving {name}…"));
-                self.incoming = Some(Incoming {
-                    id,
-                    name,
-                    mime,
-                    size,
-                    bytes: Vec::with_capacity(size as usize),
-                });
+                self.incoming = Some(Incoming::new(id, name, mime, size));
             }
 
             Msg::FileChunk { id, data } => {
                 // The borrow must end before touching the DOM helpers below.
-                let progress = match self.incoming.as_mut() {
+                let outcome = match self.incoming.as_mut() {
                     Some(incoming) if incoming.id == id => {
-                        if incoming.bytes.len() as u64 + data.len() as u64 > incoming.size {
-                            None
+                        if incoming.received + data.len() as u64 > incoming.size {
+                            Err("more data than it declared")
+                        } else if incoming.push(&data).is_err() {
+                            Err("more data than this browser would hold")
                         } else {
-                            incoming.bytes.extend_from_slice(&data);
-                            Some((
-                                incoming.name.clone(),
-                                incoming.bytes.len() as u64,
-                                incoming.size,
-                            ))
+                            Ok(incoming
+                                .progress()
+                                .map(|percent| (incoming.name.clone(), percent)))
                         }
                     }
                     // A chunk for a transfer we are not tracking: ignore it.
                     _ => return,
                 };
 
-                match progress {
-                    Some((name, done, total)) => {
-                        let percent = done * 100 / total.max(1);
-                        self.set_transfer(&format!("Receiving {name} — {percent}%"));
+                match outcome {
+                    Ok(Some((name, percent))) => {
+                        self.set_transfer(&format!("Receiving {name} — {percent}%"))
                     }
-                    None => {
+                    Ok(None) => {}
+                    Err(why) => {
                         self.incoming = None;
                         self.set_transfer("");
-                        self.log_system("A file sent more data than it declared. Discarded.");
+                        self.log_system(&format!("A file sent {why}. Discarded."));
                     }
                 }
             }
 
             Msg::FileEnd { id } => {
-                let Some(incoming) = self.incoming.take() else {
+                let Some(mut incoming) = self.incoming.take() else {
                     return;
                 };
                 if incoming.id != id {
@@ -670,13 +730,17 @@ impl App {
                 }
                 self.set_transfer("");
 
-                if incoming.bytes.len() as u64 != incoming.size {
+                if incoming.received != incoming.size {
                     return self.log_system("A file arrived incomplete and was discarded.");
                 }
 
+                let Ok(blob) = incoming.finish() else {
+                    return self.log_system("A file arrived but could not be assembled.");
+                };
+
                 let who = self.role.other().as_str();
                 if self
-                    .append_media(who, &incoming.name, &incoming.mime, &incoming.bytes)
+                    .append_media(who, &incoming.name, &incoming.mime, &blob)
                     .is_err()
                 {
                     self.log_system("A file arrived but the browser would not display it.");
@@ -1259,16 +1323,9 @@ async fn send_file(app: Shared, file: web_sys::File) {
     // already ours and stays valid after the input is cleared.
     input_by_id("file-input").set_value("");
     set_text("transfer-error", "");
-    set_text("transfer", &format!("Reading {name}…"));
+    set_text("transfer", &format!("Sending {name}…"));
 
-    let bytes = match JsFuture::from(file.array_buffer()).await {
-        Ok(buffer) => js_sys::Uint8Array::new(&buffer).to_vec(),
-        Err(_) => {
-            set_text("transfer", "");
-            return set_text("transfer-error", "That file could not be read.");
-        }
-    };
-
+    let size = file.size() as u64;
     let (peer, id) = {
         let mut a = app.borrow_mut();
         a.next_file_id += 1;
@@ -1278,15 +1335,29 @@ async fn send_file(app: Shared, file: web_sys::File) {
             id,
             name: name.clone(),
             mime: mime.clone(),
-            size: bytes.len() as u64,
+            size,
         });
         (Rc::clone(&a.peer), id)
     };
 
-    let total = bytes.len();
-    let mut sent = 0usize;
+    let mut sent: u64 = 0;
+    let mut last_percent = u8::MAX;
 
-    for chunk in bytes.chunks(CHUNK_BYTES) {
+    while sent < size {
+        let end = (sent + CHUNK_BYTES as u64).min(size);
+
+        // One slice at a time, never `array_buffer()` on the whole file: that
+        // would pull every byte into wasm memory, which a multi-gigabyte file
+        // cannot fit in. The f64 overload is required because the i32 one
+        // cannot express an offset past 2 GiB.
+        let Ok(slice) = file.slice_with_f64_and_f64(sent as f64, end as f64) else {
+            return abandon(&app, id, "That file could not be read.");
+        };
+        let Ok(buffer) = JsFuture::from(slice.array_buffer()).await else {
+            return abandon(&app, id, "That file could not be read.");
+        };
+        let data = js_sys::Uint8Array::new(&buffer).to_vec();
+
         while peer.buffered_amount() > HIGH_WATER {
             if !peer.is_open() {
                 let mut a = app.borrow_mut();
@@ -1298,16 +1369,16 @@ async fn send_file(app: Shared, file: web_sys::File) {
             sleep_ms(25).await;
         }
 
-        app.borrow_mut().send(&Msg::FileChunk {
-            id,
-            data: chunk.to_vec(),
-        });
+        app.borrow_mut().send(&Msg::FileChunk { id, data });
+        sent = end;
 
-        sent += chunk.len();
-        set_text(
-            "transfer",
-            &format!("Sending {name} — {}%", sent * 100 / total.max(1)),
-        );
+        // A 4 GiB file is ~147,000 chunks. Writing the DOM on each one would
+        // cost more than the transfer.
+        let percent = (sent.saturating_mul(100) / size.max(1)).min(100) as u8;
+        if percent != last_percent {
+            last_percent = percent;
+            set_text("transfer", &format!("Sending {name} — {percent}%"));
+        }
     }
 
     {
@@ -1315,14 +1386,29 @@ async fn send_file(app: Shared, file: web_sys::File) {
         a.send(&Msg::FileEnd { id });
         a.sending_file = false;
 
-        // Show the sender their own attachment, so the log reads the same on
-        // both screens.
+        // A File is already a Blob, so the sender's own preview costs nothing
+        // and the log reads the same on both screens.
         let me = a.role.as_str();
-        if a.append_media(me, &name, &mime, &bytes).is_err() {
+        if a.append_media(me, &name, &mime, &file).is_err() {
             a.log_system("Sent, but your own browser would not preview it.");
         }
     }
     set_text("transfer", "");
+}
+
+/// Give up on a transfer, telling the peer so it drops what it is holding
+/// rather than waiting for bytes that will never arrive.
+fn abandon(app: &Shared, id: u32, why: &str) {
+    {
+        let mut a = app.borrow_mut();
+        a.send(&Msg::FileAbort {
+            id,
+            reason: "the sender could not read the file".into(),
+        });
+        a.sending_file = false;
+    }
+    set_text("transfer", "");
+    set_text("transfer-error", why);
 }
 
 /// The animation callback holds a handle to itself so it can re-arm each frame.
