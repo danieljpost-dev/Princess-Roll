@@ -1,0 +1,106 @@
+[package]
+name = "princess-roll"
+version = "0.1.0"
+edition = "2021"
+description = "Peer-to-peer encrypted chat and D20 roller. No server, no accounts, no stored identity."
+license = "MIT"
+repository = "https://github.com/danieljpost-dev/Princess-Roll"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# Tests are opt-in. Without `--features tests` the suite is not compiled at all,
+# so nothing test-related can reach a release artifact.
+[features]
+default = []
+tests = []
+
+[[bin]]
+name = "setup"
+path = "src/bin/setup.rs"
+
+# Shared by the WASM app and the native setup binary.
+[dependencies]
+sha2 = "0.10"
+hkdf = "0.12"
+aes-gcm = "0.10"
+argon2 = "0.5"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+getrandom = "0.2"
+base64 = "0.22"
+miniz_oxide = "0.8"
+subtle = "2"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "=0.2.126"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+console_error_panic_hook = "0.1"
+getrandom = { version = "0.2", features = ["js"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies.web-sys]
+version = "0.3"
+features = [
+  "console",
+  "Window",
+  "Document",
+  "Navigator",
+  "Clipboard",
+  "Performance",
+  "Element",
+  "HtmlElement",
+  "HtmlInputElement",
+  "HtmlTextAreaElement",
+  "HtmlButtonElement",
+  "HtmlCanvasElement",
+  "CanvasRenderingContext2d",
+  "Event",
+  "EventTarget",
+  "MessageEvent",
+  "KeyboardEvent",
+  "CssStyleDeclaration",
+  "DomTokenList",
+  "WebGl2RenderingContext",
+  "WebGlProgram",
+  "WebGlShader",
+  "WebGlBuffer",
+  "WebGlTexture",
+  "WebGlUniformLocation",
+  "WebGlVertexArrayObject",
+  "RtcPeerConnection",
+  "RtcConfiguration",
+  "RtcIceServer",
+  "RtcDataChannel",
+  "RtcDataChannelInit",
+  "RtcDataChannelEvent",
+  "RtcDataChannelState",
+  "RtcDataChannelType",
+  "RtcSessionDescription",
+  "RtcSessionDescriptionInit",
+  "RtcSdpType",
+  "RtcIceGatheringState",
+  "RtcPeerConnectionIceEvent",
+  "AudioContext",
+  "AudioContextState",
+  "AudioDestinationNode",
+  "AudioParam",
+  "OscillatorNode",
+  "OscillatorType",
+  "GainNode",
+  "BiquadFilterNode",
+  "BiquadFilterType",
+  "Response",
+  "Request",
+  "RequestInit",
+]
+
+# rpassword keeps the secret codes off the terminal scrollback during setup.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rpassword = "7"
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+panic = "abort"
+strip = true

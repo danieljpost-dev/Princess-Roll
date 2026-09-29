@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<title>Princess-Roll</title>
+<link rel="stylesheet" href="./style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>&#127922;</text></svg>">
+</head>
+<body>
+
+<main>
+
+  <!-- ------------------------------------------------ gate -->
+  <section id="gate" class="panel">
+    <h1>Princess&#8209;Roll</h1>
+    <p class="lede">Enter your secret code. It decides which of you you are.</p>
+
+    <label class="field">
+      <span>Secret code</span>
+      <input id="code-input" type="password" autocomplete="off" autocapitalize="off"
+             autocorrect="off" spellcheck="false" placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;">
+    </label>
+
+    <button id="unlock" class="primary">Unlock</button>
+    <p id="gate-status" class="status"></p>
+    <p id="gate-error" class="error"></p>
+
+    <p class="fine">
+      Nothing here is stored. No cookies, no local storage, no accounts.
+      Closing this tab erases everything it knew.
+    </p>
+  </section>
+
+  <!-- ------------------------------------------------ pairing -->
+  <section id="pair" class="panel hidden">
+    <h2>Connecting as <span id="pair-role" class="badge"></span></h2>
+
+    <div id="pair-daddy" class="hidden">
+      <p class="lede">Make an invite and send it to Princess however you two already talk.</p>
+      <button id="make-invite" class="primary">Create invite code</button>
+
+      <div id="invite-ready" class="hidden">
+        <label class="field">
+          <span>Your invite code &mdash; send this to her</span>
+          <textarea id="invite-out" readonly rows="4"></textarea>
+        </label>
+        <button id="copy-invite">Copy invite</button>
+
+        <label class="field">
+          <span>Her reply code &mdash; paste it here</span>
+          <textarea id="reply-in" rows="4" placeholder="Paste Princess's reply"></textarea>
+        </label>
+        <button id="accept-reply" class="primary">Connect</button>
+      </div>
+    </div>
+
+    <div id="pair-princess" class="hidden">
+      <p class="lede">Paste the invite Daddy sent you.</p>
+      <label class="field">
+        <span>His invite code</span>
+        <textarea id="invite-in" rows="4" placeholder="Paste Daddy's invite"></textarea>
+      </label>
+      <button id="accept-invite" class="primary">Accept invite</button>
+
+      <div id="reply-ready" class="hidden">
+        <label class="field">
+          <span>Your reply code &mdash; send this back to him</span>
+          <textarea id="reply-out" readonly rows="4"></textarea>
+        </label>
+        <button id="copy-reply">Copy reply</button>
+      </div>
+    </div>
+
+    <p id="pair-status" class="status"></p>
+    <p id="pair-error" class="error"></p>
+
+    <p class="fine">
+      These codes are encrypted with your pair of secret codes, so whatever you
+      paste them through cannot read them.
+    </p>
+  </section>
+
+  <!-- ------------------------------------------------ room -->
+  <section id="room" class="hidden">
+
+    <header class="bar">
+      <span id="role-badge" class="badge"></span>
+      <span class="verify">
+        safety phrase <strong id="verify-phrase">&hellip;</strong>
+      </span>
+      <span id="link-state" class="link-state">connecting</span>
+    </header>
+
+    <div class="stage">
+      <canvas id="dice"></canvas>
+
+      <div id="result" class="result hidden">
+        <svg id="result-success" class="sigil hidden" viewBox="0 0 120 120" aria-hidden="true">
+          <g fill="none" stroke="#ffd166" stroke-width="4" stroke-linecap="round">
+            <circle cx="60" cy="60" r="34" stroke-width="5"/>
+            <path d="M44 61 l12 13 l22 -28" stroke-width="8" stroke-linejoin="round"/>
+            <g opacity="0.9">
+              <path d="M60 12 v12 M60 96 v12 M12 60 h12 M96 60 h12"/>
+              <path d="M26 26 l9 9 M85 85 l9 9 M94 26 l-9 9 M35 85 l-9 9"/>
+            </g>
+          </g>
+        </svg>
+
+        <svg id="result-failure" class="sigil hidden" viewBox="0 0 120 120" aria-hidden="true">
+          <g fill="none" stroke="#7d8496" stroke-width="5" stroke-linecap="round">
+            <path d="M60 22 l30 12 v26 c0 22 -14 33 -30 42 c-16 -9 -30 -20 -30 -42 V34 Z"/>
+            <path d="M58 40 l-8 24 h18 l-10 26" stroke-width="7" stroke-linejoin="round"/>
+          </g>
+        </svg>
+
+        <div class="result-number" id="result-value">&mdash;</div>
+        <div class="result-line" id="result-line"></div>
+      </div>
+    </div>
+
+    <section class="challenge">
+      <div id="challenge-empty">
+        <p class="muted">No challenge set.</p>
+      </div>
+      <div id="challenge-active" class="hidden">
+        <p class="challenge-text" id="challenge-current"></p>
+        <p class="threshold">needs <strong id="threshold-display">&mdash;</strong> or better</p>
+      </div>
+
+      <div id="daddy-controls" class="hidden controls">
+        <label class="field">
+          <span>The Challenge</span>
+          <input id="challenge-text" type="text" maxlength="240" placeholder="What must she do?">
+        </label>
+        <label class="field narrow">
+          <span>Threshold</span>
+          <input id="threshold" type="number" min="1" max="20" value="11">
+        </label>
+        <div class="row">
+          <button id="set-challenge" class="primary">Set challenge</button>
+          <button id="clear-challenge">Clear</button>
+        </div>
+        <p id="challenge-error" class="error"></p>
+      </div>
+
+      <div id="princess-controls" class="hidden controls">
+        <p class="muted">Daddy sets the challenge. You roll against it.</p>
+      </div>
+
+      <div class="row roll-row">
+        <button id="roll" class="primary big" disabled>Roll the Dice</button>
+        <span id="roll-hint" class="muted"></span>
+      </div>
+    </section>
+
+    <section class="chat">
+      <div id="log" class="log" aria-live="polite"></div>
+      <div class="row">
+        <input id="chat-input" type="text" maxlength="2000" placeholder="Say something"
+               autocomplete="off">
+        <button id="send">Send</button>
+      </div>
+    </section>
+
+  </section>
+
+  <noscript>
+    <p class="error">This page is a WebAssembly application and needs JavaScript enabled.</p>
+  </noscript>
+
+</main>
+
+<script type="module">
+  import init, { start } from './princess_roll.js';
+
+  init({ module_or_path: './princess_roll_bg.wasm' })
+    .then(start)
+    .catch((error) => {
+      console.error(error);
+      const slot = document.getElementById('gate-error');
+      if (slot) {
+        slot.textContent = 'This page failed to load. It needs a modern browser with WebAssembly.';
+      }
+    });
+</script>
+
+</body>
+</html>

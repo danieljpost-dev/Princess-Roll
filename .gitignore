@@ -1,0 +1,10 @@
+/target
+
+# The published site is assembled by build.sh locally and by CI on push.
+# Source of truth is src/ and web/, never the build output.
+/docs
+
+# Belt and braces: secret codes must never reach the repository. The wrapped
+# pairing file (web/pairing.bin) is ciphertext and IS committed on purpose.
+*.code
+codes.txt

@@ -1,0 +1,114 @@
+name: Build and deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never let two deploys race; always finish the newest one.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  WASM_BINDGEN_VERSION: "0.2.126"
+
+jobs:
+  test:
+    name: Test suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: test-${{ runner.os }}-${{ hashFiles('Cargo.toml') }}
+
+      # Tests are an opt-in feature; this is the only place it is ever passed.
+      - name: Run tests
+        run: cargo test --features tests
+
+      - name: Confirm tests are off by default
+        run: |
+          output=$(cargo test 2>&1)
+          echo "$output"
+          if echo "$output" | grep -qE 'running [1-9][0-9]* test'; then
+            echo "::error::tests ran without --features tests"
+            exit 1
+          fi
+
+  build:
+    name: Build site
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+            target
+          key: wasm-${{ runner.os }}-${{ env.WASM_BINDGEN_VERSION }}-${{ hashFiles('Cargo.toml') }}
+
+      - name: Add wasm target
+        run: rustup target add wasm32-unknown-unknown
+
+      # The CLI and the crate must be the same version or the bindings will not
+      # match the module.
+      - name: Install wasm-bindgen-cli
+        run: |
+          if ! wasm-bindgen --version 2>/dev/null | grep -q "$WASM_BINDGEN_VERSION"; then
+            cargo install wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION" --locked --force
+          fi
+
+      - name: Check the pairing file is present
+        run: |
+          if [ ! -f web/pairing.bin ]; then
+            echo "::error::web/pairing.bin is missing. Run 'cargo run --bin setup' locally and commit it."
+            exit 1
+          fi
+
+      # No --features flag: the deployed artifact contains no test code.
+      - name: Build
+        run: cargo build --release --lib --target wasm32-unknown-unknown
+
+      - name: Generate bindings
+        run: |
+          wasm-bindgen --target web --no-typescript --out-dir docs \
+            target/wasm32-unknown-unknown/release/princess_roll.wasm
+
+      - name: Assemble site
+        run: |
+          cp web/index.html web/style.css web/CNAME web/pairing.bin docs/
+          touch docs/.nojekyll
+          ls -lh docs
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+  deploy:
+    name: Deploy
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
