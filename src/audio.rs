@@ -53,6 +53,13 @@ impl Sfx {
             let _ = sad_trumpet(context);
         }
     }
+
+    /// A summons, not a verdict — played when a challenge lands.
+    pub fn alert(&mut self) {
+        if let Some(context) = self.context() {
+            let _ = chime(context);
+        }
+    }
 }
 
 /// An envelope shaped for a short, bright note.
@@ -104,6 +111,41 @@ fn fanfare(context: &AudioContext) -> Result<(), JsValue> {
 
             osc.start_with_when(start)?;
             osc.stop_with_when(start + duration + 0.05)?;
+        }
+    }
+    Ok(())
+}
+
+/// Two rising bell tones, struck twice. Kept deliberately unlike the win and
+/// lose stings: those report a result, this one asks for attention.
+fn chime(context: &AudioContext) -> Result<(), JsValue> {
+    let now = context.current_time();
+
+    // B5 then E6, struck again after a short gap so it reads as a summons
+    // rather than a notification blip.
+    let strikes: [(f32, f64); 4] = [
+        (987.77, 0.00),
+        (1318.51, 0.17),
+        (987.77, 0.52),
+        (1318.51, 0.69),
+    ];
+
+    for (frequency, offset) in strikes {
+        let start = now + offset;
+
+        // A sine fundamental plus a quiet partial a twelfth above gives the
+        // metallic ring of a struck bell without needing a sample.
+        for (ratio, level) in [(1.0, 0.26), (3.0, 0.05)] {
+            let osc = context.create_oscillator()?;
+            osc.set_type(OscillatorType::Sine);
+            osc.frequency().set_value_at_time(frequency * ratio, start)?;
+
+            let gain = envelope(context, start, 0.55, level)?;
+            osc.connect_with_audio_node(&gain)?;
+            gain.connect_with_audio_node(&context.destination())?;
+
+            osc.start_with_when(start)?;
+            osc.stop_with_when(start + 0.6)?;
         }
     }
     Ok(())
