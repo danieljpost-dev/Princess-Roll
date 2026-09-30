@@ -83,6 +83,11 @@ impl Sfx {
         self.play(chime);
     }
 
+    /// Fires on every chat message, so it is kept short and quiet.
+    pub fn blip(&mut self) {
+        self.play(blip);
+    }
+
     /// Muted means no oscillators are scheduled at all, rather than scheduled
     /// into a silent gain.
     fn play(&mut self, sound: fn(&AudioContext, &GainNode) -> Result<(), JsValue>) {
@@ -181,6 +186,29 @@ fn chime(context: &AudioContext, out: &GainNode) -> Result<(), JsValue> {
             osc.stop_with_when(start + 0.6)?;
         }
     }
+    Ok(())
+}
+
+/// One short pip. Quieter and briefer than anything else here, because it
+/// plays on every message rather than at a moment that matters.
+fn blip(context: &AudioContext, out: &GainNode) -> Result<(), JsValue> {
+    let start = context.current_time();
+    const DURATION: f64 = 0.07;
+
+    let osc = context.create_oscillator()?;
+    osc.set_type(OscillatorType::Sine);
+    osc.frequency().set_value_at_time(1174.66, start)?;
+
+    // A slight downward slide stops it sounding like an alarm.
+    osc.frequency()
+        .exponential_ramp_to_value_at_time(880.0, start + DURATION)?;
+
+    let gain = envelope(context, start, DURATION, 0.13)?;
+    osc.connect_with_audio_node(&gain)?;
+    gain.connect_with_audio_node(out)?;
+
+    osc.start_with_when(start)?;
+    osc.stop_with_when(start + DURATION + 0.02)?;
     Ok(())
 }
 
